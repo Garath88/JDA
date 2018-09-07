@@ -6,7 +6,7 @@
 
     <groupId>net.dv8tion</groupId>
     <artifactId>JDA</artifactId>
-    <version>3.5.1_352</version>
+    <version>3.5.1_352-SNAPSHOT</version>
 
     <build>
         <plugins>

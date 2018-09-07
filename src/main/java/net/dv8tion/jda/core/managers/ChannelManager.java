@@ -478,7 +478,7 @@ public class ChannelManager extends ManagerBase
         Checks.notBlank(name, "Name");
         Checks.check(name.length() >= 2 && name.length() <= 100, "Name must be between 2-100 characters long");
         if (getType() == ChannelType.TEXT)
-            Checks.noWhitespace(name, "Name");
+            //Checks.noWhitespace(name, "Name");
         this.name = name;
         set |= NAME;
         return this;
