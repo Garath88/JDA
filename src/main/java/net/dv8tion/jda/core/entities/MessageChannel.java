@@ -296,6 +296,18 @@ public interface MessageChannel extends ISnowflake, Formattable
         return new MessageAction(getJDA(), route, this).embed(embed);
     }
 
+    @CheckReturnValue
+    default MessageAction sendMessage(String message, MessageEmbed embed)
+    {
+        Checks.notNull(embed, "Provided embed");
+
+        Route.CompiledRoute route = Route.Messages.SEND_MESSAGE.compile(getId());
+        return new MessageAction(getJDA(), route, this)
+            .append(message)
+            .embed(embed);
+    }
+
+
     /**
      * Sends a specified {@link net.dv8tion.jda.core.entities.Message Message} to this channel.
      * <br>This will fail if this channel is an instance of {@link net.dv8tion.jda.core.entities.TextChannel TextChannel} and
