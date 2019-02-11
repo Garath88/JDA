@@ -24,13 +24,12 @@ import net.dv8tion.jda.core.JDA;
 import net.dv8tion.jda.core.OnlineStatus;
 import net.dv8tion.jda.core.audio.factory.IAudioSendFactory;
 import net.dv8tion.jda.core.entities.Game;
+import net.dv8tion.jda.core.entities.Guild;
 import net.dv8tion.jda.core.entities.impl.JDAImpl;
 import net.dv8tion.jda.core.hooks.IEventManager;
 import net.dv8tion.jda.core.managers.impl.PresenceImpl;
-import net.dv8tion.jda.core.utils.Checks;
-import net.dv8tion.jda.core.utils.JDALogger;
-import net.dv8tion.jda.core.utils.SessionController;
-import net.dv8tion.jda.core.utils.SessionControllerAdapter;
+import net.dv8tion.jda.core.utils.*;
+import net.dv8tion.jda.core.utils.cache.CacheFlag;
 import net.dv8tion.jda.core.utils.tuple.Pair;
 import okhttp3.OkHttpClient;
 import org.slf4j.Logger;
@@ -57,6 +56,7 @@ public class DefaultShardManager implements ShardManager
         t.setPriority(Thread.NORM_PRIORITY + 1);
         return t;
     };
+
     /**
      * The {@link net.dv8tion.jda.core.utils.SessionController SessionController} for this manager.
      */
@@ -93,9 +93,9 @@ public class DefaultShardManager implements ShardManager
     protected final boolean enableVoice;
 
     /**
-     * The {@link net.dv8tion.jda.core.hooks.IEventManager IEventManager} used by the ShardManager.
+     * The provider for {@link net.dv8tion.jda.core.hooks.IEventManager IEventManager} used by the ShardManager
      */
-    protected final IEventManager eventManager;
+    protected final IntFunction<? extends IEventManager> eventManagerProvider;
 
     /**
      * The event listeners for new JDA instances.
@@ -135,9 +135,29 @@ public class DefaultShardManager implements ShardManager
     protected int shardsTotal;
 
     /**
-     * The {@link okhttp3.OkHttpClient.Builder OkHttpClient.Builder} that will be used by JDA's requester.
+     * The {@link okhttp3.OkHttpClient.Builder OkHttpClient.Builder} that will be used by JDAs requester.
      */
     protected final OkHttpClient.Builder httpClientBuilder;
+
+    /**
+     * The {@link okhttp3.OkHttpClient OkHttpClient} that will be used by JDAs requester.
+     */
+    protected final OkHttpClient httpClient;
+
+    /**
+     * The {@link ScheduledExecutorService ScheduledExecutorService} that will be used by JDAs rate-limit handler.
+     */
+    protected final ThreadPoolProvider<? extends ScheduledExecutorService> rateLimitPoolProvider;
+
+    /**
+     * The {@link ScheduledExecutorService ScheduledExecutorService} that will be used for JDAs main WebSocket workers.
+     */
+    protected final ThreadPoolProvider<? extends ScheduledExecutorService> gatewayPoolProvider;
+
+    /**
+     * The {@link ExecutorService ExecutorService} that will be used by JDAs callback handler.
+     */
+    protected final ThreadPoolProvider<? extends ExecutorService> callbackPoolProvider;
 
     /**
      * The {@link com.neovisionaries.ws.client.WebSocketFactory WebSocketFactory} that will be used by JDA's websocket client.
@@ -184,7 +204,7 @@ public class DefaultShardManager implements ShardManager
     /**
      * The gameProvider new JDA instances should have on startup.
      */
-    protected IntFunction<Game> gameProvider;
+    protected IntFunction<? extends Game> gameProvider;
 
     /**
      * Whether or not new JDA instances should be marked as afk on startup.
@@ -199,7 +219,7 @@ public class DefaultShardManager implements ShardManager
     /**
      * The MDC context provider new JDA instances should use on startup.
      */
-    protected IntFunction<ConcurrentMap<String, String>> contextProvider;
+    protected IntFunction<? extends ConcurrentMap<String, String>> contextProvider;
 
     /**
      * Whether to use the MDC context provider.
@@ -210,6 +230,11 @@ public class DefaultShardManager implements ShardManager
      * Whether to enable transport compression
      */
     protected boolean enableCompression;
+
+    /**
+     * Cache flags
+     */
+    protected final EnumSet<CacheFlag> cacheFlags;
 
     /**
      * Creates a new DefaultShardManager instance.
@@ -227,8 +252,8 @@ public class DefaultShardManager implements ShardManager
      *         shard creation (including shard restarts) and must return an event listener
      * @param  token
      *         The token
-     * @param  eventManager
-     *         The event manager
+     * @param  eventManagerProvider
+     *         The event manager provider
      * @param  audioSendFactory
      *         The {@link net.dv8tion.jda.core.audio.factory.IAudioSendFactory IAudioSendFactory}
      * @param  gameProvider
@@ -237,6 +262,14 @@ public class DefaultShardManager implements ShardManager
      *         The statusProvider used at startup of new JDA instances
      * @param  httpClientBuilder
      *         The {@link okhttp3.OkHttpClient.Builder OkHttpClient.Builder}
+     * @param  httpClient
+     *         The {@link okhttp3.OkHttpClient OkHttpClient}
+     * @param  rateLimitPoolProvider
+     *         Provider for the rate-limit pool
+     * @param  gatewayPoolProvider
+     *         Provider for the main ws pool
+     * @param  callbackPoolProvider
+     *         Provider for the callback pool
      * @param  wsFactory
      *         The {@link com.neovisionaries.ws.client.WebSocketFactory WebSocketFactory}
      * @param  threadFactory
@@ -257,39 +290,52 @@ public class DefaultShardManager implements ShardManager
      * @param  idleProvider
      *         The Function that is used to set a shards idle state
      * @param  retryOnTimeout
-     *         hether the Requester should retry when a {@link java.net.SocketTimeoutException SocketTimeoutException} occurs.
+     *         Whether the Requester should retry when a {@link java.net.SocketTimeoutException SocketTimeoutException} occurs.
      * @param  useShutdownNow
      *         Whether the ShardManager should use JDA#shutdown() or not
      * @param  enableMDC
      *         Whether MDC should be enabled
      * @param  contextProvider
      *         The MDC context provider new JDA instances should use on startup
+     * @param  cacheFlags
+     *         The enabled cache flags
      * @param  enableCompression
      *         Whether to enable transport compression
      */
-    protected DefaultShardManager(final int shardsTotal, final Collection<Integer> shardIds,
-                                  final SessionController controller, final List<Object> listeners,
-                                  final List<IntFunction<Object>> listenerProviders,
-                                  final String token, final IEventManager eventManager, final IAudioSendFactory audioSendFactory,
-                                  final IntFunction<Game> gameProvider, final IntFunction<OnlineStatus> statusProvider,
-                                  final OkHttpClient.Builder httpClientBuilder, final WebSocketFactory wsFactory,
-                                  final ThreadFactory threadFactory,
-                                  final int maxReconnectDelay, final int corePoolSize, final boolean enableVoice,
-                                  final boolean enableShutdownHook, final boolean enableBulkDeleteSplitting,
-                                  final boolean autoReconnect, final IntFunction<Boolean> idleProvider,
-                                  final boolean retryOnTimeout, final boolean useShutdownNow,
-                                  final boolean enableMDC, final IntFunction<ConcurrentMap<String, String>> contextProvider,
-                                  final boolean enableCompression)
+    protected DefaultShardManager(
+            final int shardsTotal, final Collection<Integer> shardIds,
+            final SessionController controller, final List<Object> listeners,
+            final List<IntFunction<Object>> listenerProviders,
+            final String token, final IntFunction<? extends IEventManager> eventManagerProvider, final IAudioSendFactory audioSendFactory,
+            final IntFunction<? extends Game> gameProvider, final IntFunction<OnlineStatus> statusProvider,
+            final OkHttpClient.Builder httpClientBuilder, final OkHttpClient httpClient,
+            final ThreadPoolProvider<? extends ScheduledExecutorService> rateLimitPoolProvider,
+            final ThreadPoolProvider<? extends ScheduledExecutorService> gatewayPoolProvider,
+            final ThreadPoolProvider<? extends ExecutorService> callbackPoolProvider,
+            final WebSocketFactory wsFactory, final ThreadFactory threadFactory,
+            final int maxReconnectDelay, final int corePoolSize, final boolean enableVoice,
+            final boolean enableShutdownHook, final boolean enableBulkDeleteSplitting,
+            final boolean autoReconnect, final IntFunction<Boolean> idleProvider,
+            final boolean retryOnTimeout, final boolean useShutdownNow,
+            final boolean enableMDC, final IntFunction<? extends ConcurrentMap<String, String>> contextProvider,
+            final EnumSet<CacheFlag> cacheFlags, final boolean enableCompression)
     {
         this.shardsTotal = shardsTotal;
         this.listeners = listeners;
         this.listenerProviders = listenerProviders;
         this.token = token;
-        this.eventManager = eventManager;
+        this.eventManagerProvider = eventManagerProvider;
         this.audioSendFactory = audioSendFactory;
         this.gameProvider = gameProvider;
         this.statusProvider = statusProvider;
-        this.httpClientBuilder = httpClientBuilder == null ? new OkHttpClient.Builder() : httpClientBuilder;
+        this.httpClient = httpClient;
+        if (httpClient == null)
+            this.httpClientBuilder = httpClientBuilder == null ? new OkHttpClient.Builder() : httpClientBuilder;
+        else
+            this.httpClientBuilder = null;
+        this.rateLimitPoolProvider = rateLimitPoolProvider;
+        this.gatewayPoolProvider = gatewayPoolProvider;
+        this.callbackPoolProvider = callbackPoolProvider;
         this.wsFactory = wsFactory == null ? new WebSocketFactory() : wsFactory;
         this.executor = createExecutor(threadFactory);
         this.controller = controller == null ? new SessionControllerAdapter() : controller;
@@ -305,6 +351,7 @@ public class DefaultShardManager implements ShardManager
         this.contextProvider = contextProvider;
         this.enableMDC = enableMDC;
         this.enableCompression = enableCompression;
+        this.cacheFlags = cacheFlags;
 
         synchronized (queue)
         {
@@ -356,6 +403,20 @@ public class DefaultShardManager implements ShardManager
     public int getShardsQueued()
     {
         return this.queue.size();
+    }
+
+    @Override
+    public int getShardsTotal()
+    {
+        return shardsTotal;
+    }
+
+    @Override
+    public Guild getGuildById(long id)
+    {
+        int shardId = MiscUtil.getShardForGuild(id, getShardsTotal());
+        JDA shard = this.getShardById(shardId);
+        return shard == null ? null : shard.getGuildById(id);
     }
 
     @Override
@@ -576,14 +637,33 @@ public class DefaultShardManager implements ShardManager
 
     protected JDAImpl buildInstance(final int shardId) throws LoginException, InterruptedException
     {
-        final JDAImpl jda = new JDAImpl(AccountType.BOT, this.token, this.controller, this.httpClientBuilder, this.wsFactory,
-            this.autoReconnect, this.enableVoice, false, this.enableBulkDeleteSplitting, this.retryOnTimeout, this.enableMDC,
-            this.corePoolSize, this.maxReconnectDelay, this.contextProvider == null || !this.enableMDC ? null : contextProvider.apply(shardId));
+        OkHttpClient httpClient = this.httpClient;
+        if (httpClient == null)
+            httpClient = this.httpClientBuilder.build();
+
+        // imagine if we had macros or closures or destructuring :)
+        ExecutorPair<ScheduledExecutorService> rateLimitPair = resolveExecutor(rateLimitPoolProvider, shardId);
+        ScheduledExecutorService rateLimitPool = rateLimitPair.executor;
+        boolean shutdownRateLimitPool = rateLimitPair.automaticShutdown;
+
+        ExecutorPair<ScheduledExecutorService> gatewayPair = resolveExecutor(gatewayPoolProvider, shardId);
+        ScheduledExecutorService gatewayPool = gatewayPair.executor;
+        boolean shutdownGatewayPool = gatewayPair.automaticShutdown;
+
+        ExecutorPair<ExecutorService> callbackPair = resolveExecutor(callbackPoolProvider, shardId);
+        ExecutorService callbackPool = callbackPair.executor;
+        boolean shutdownCallbackPool = callbackPair.automaticShutdown;
+
+        final JDAImpl jda = new JDAImpl(
+                AccountType.BOT, this.token, this.controller, httpClient, this.wsFactory,
+                rateLimitPool, gatewayPool, callbackPool, this.autoReconnect, this.enableVoice, false, this.enableBulkDeleteSplitting,
+                this.retryOnTimeout, this.enableMDC, shutdownRateLimitPool, shutdownGatewayPool, shutdownCallbackPool, this.corePoolSize, this.maxReconnectDelay,
+                this.contextProvider == null || !this.enableMDC ? null : contextProvider.apply(shardId), this.cacheFlags);
 
         jda.asBot().setShardManager(this);
 
-        if (this.eventManager != null)
-            jda.setEventManager(this.eventManager);
+        if (this.eventManagerProvider != null)
+            jda.setEventManager(this.eventManagerProvider.apply(shardId));
 
         if (this.audioSendFactory != null)
             jda.setAudioSendFactory(this.audioSendFactory);
@@ -607,6 +687,10 @@ public class DefaultShardManager implements ShardManager
             {
                 Pair<String, Integer> gateway = jda.getGatewayBot();
                 this.gatewayURL = gateway.getLeft();
+                if (this.gatewayURL == null)
+                    LOG.error("Acquired null gateway url from SessionController");
+                else
+                    LOG.info("Login Successful!");
 
                 if (this.shardsTotal == -1)
                 {
@@ -635,7 +719,7 @@ public class DefaultShardManager implements ShardManager
 
         final JDA.ShardInfo shardInfo = new JDA.ShardInfo(shardId, this.shardsTotal);
 
-        final int shardTotal = jda.login(this.gatewayURL, shardInfo, this.enableCompression);
+        final int shardTotal = jda.login(this.gatewayURL, shardInfo, this.enableCompression, false);
         if (this.shardsTotal == -1)
             this.shardsTotal = shardTotal;
 
@@ -643,7 +727,7 @@ public class DefaultShardManager implements ShardManager
     }
 
     @Override
-    public void setGameProvider(IntFunction<Game> gameProvider)
+    public void setGameProvider(IntFunction<? extends Game> gameProvider)
     {
         ShardManager.super.setGameProvider(gameProvider);
 
@@ -656,6 +740,15 @@ public class DefaultShardManager implements ShardManager
         ShardManager.super.setIdleProvider(idleProvider);
 
         this.idleProvider = idleProvider;
+    }
+
+    @Override
+    public void setPresenceProvider(IntFunction<OnlineStatus> statusProvider, IntFunction<? extends Game> gameProvider)
+    {
+        ShardManager.super.setPresenceProvider(statusProvider, gameProvider);
+
+        this.statusProvider = statusProvider;
+        this.gameProvider = gameProvider;
     }
 
     @Override
@@ -679,5 +772,29 @@ public class DefaultShardManager implements ShardManager
             : threadFactory;
 
         return Executors.newSingleThreadScheduledExecutor(factory);
+    }
+
+    protected static <E extends ExecutorService> ExecutorPair<E> resolveExecutor(ThreadPoolProvider<? extends E> provider, int shardId)
+    {
+        E executor = null;
+        boolean automaticShutdown = true;
+        if (provider != null)
+        {
+            executor = provider.provide(shardId);
+            automaticShutdown = provider.shouldShutdownAutomatically(shardId);
+        }
+        return new ExecutorPair<>(executor, automaticShutdown);
+    }
+
+    protected static class ExecutorPair<E extends ExecutorService>
+    {
+        protected final E executor;
+        protected final boolean automaticShutdown;
+
+        protected ExecutorPair(E executor, boolean automaticShutdown)
+        {
+            this.executor = executor;
+            this.automaticShutdown = automaticShutdown;
+        }
     }
 }

@@ -47,6 +47,8 @@ public class ErrorResponseException extends RuntimeException
         super(code + ": " + meaning);
 
         this.response = response;
+        if (response != null && response.getException() != null)
+            initCause(response.getException());
         this.errorResponse = errorResponse;
         this.code = code;
         this.meaning = meaning;

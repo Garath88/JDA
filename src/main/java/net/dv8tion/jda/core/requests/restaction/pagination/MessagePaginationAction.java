@@ -16,24 +16,17 @@
 
 package net.dv8tion.jda.core.requests.restaction.pagination;
 
-import java.util.ArrayList;
-import java.util.List;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import net.dv8tion.jda.core.Permission;
-import net.dv8tion.jda.core.entities.ChannelType;
-import net.dv8tion.jda.core.entities.EntityBuilder;
-import net.dv8tion.jda.core.entities.Message;
-import net.dv8tion.jda.core.entities.MessageChannel;
-import net.dv8tion.jda.core.entities.TextChannel;
+import net.dv8tion.jda.core.entities.*;
 import net.dv8tion.jda.core.exceptions.InsufficientPermissionException;
 import net.dv8tion.jda.core.requests.Request;
 import net.dv8tion.jda.core.requests.Response;
 import net.dv8tion.jda.core.requests.Route;
+import org.json.JSONArray;
+import org.json.JSONException;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * {@link net.dv8tion.jda.core.requests.restaction.pagination.PaginationAction PaginationAction}
@@ -66,17 +59,19 @@ import net.dv8tion.jda.core.requests.Route;
  * }
  * </code></pre>
  *
- * @since 3.1
+ * @since  3.1
  */
-public class MessagePaginationAction extends PaginationAction<Message, MessagePaginationAction> {
+public class MessagePaginationAction extends PaginationAction<Message, MessagePaginationAction>
+{
     private final MessageChannel channel;
-    private static final Logger LOGGER = LoggerFactory.getLogger(MessagePaginationAction.class);
 
-    public MessagePaginationAction(MessageChannel channel) {
+    public MessagePaginationAction(MessageChannel channel)
+    {
         super(channel.getJDA(), Route.Messages.GET_MESSAGE_HISTORY.compile(channel.getId()), 1, 100, 100);
 
-        if (channel.getType() == ChannelType.TEXT) {
-            TextChannel textChannel = (TextChannel)channel;
+        if (channel.getType() == ChannelType.TEXT)
+        {
+            TextChannel textChannel = (TextChannel) channel;
             if (!textChannel.getGuild().getSelfMember().hasPermission(textChannel, Permission.MESSAGE_HISTORY))
                 throw new InsufficientPermissionException(Permission.MESSAGE_HISTORY);
         }
@@ -90,7 +85,8 @@ public class MessagePaginationAction extends PaginationAction<Message, MessagePa
      *
      * @return {@link net.dv8tion.jda.core.entities.ChannelType ChannelType}
      */
-    public ChannelType getType() {
+    public ChannelType getType()
+    {
         return getChannel().getType();
     }
 
@@ -99,12 +95,14 @@ public class MessagePaginationAction extends PaginationAction<Message, MessagePa
      *
      * @return The MessageChannel instance
      */
-    public MessageChannel getChannel() {
+    public MessageChannel getChannel()
+    {
         return channel;
     }
 
     @Override
-    protected Route.CompiledRoute finalizeRoute() {
+    protected Route.CompiledRoute finalizeRoute()
+    {
         Route.CompiledRoute route = super.finalizeRoute();
 
         final String limit = String.valueOf(this.getLimit());
@@ -119,26 +117,29 @@ public class MessagePaginationAction extends PaginationAction<Message, MessagePa
     }
 
     @Override
-    protected void handleResponse(Response response, Request<List<Message>> request) {
-        if (!response.isOk()) {
-            String requestRoute = String.format("Request: %s",
-                request.getRoute().getCompiledRoute());
-            LOGGER.error(requestRoute);
+    protected void handleResponse(Response response, Request<List<Message>> request)
+    {
+        if (!response.isOk())
+        {
             request.onFailure(response);
             return;
         }
 
         JSONArray array = response.getArray();
         List<Message> messages = new ArrayList<>(array.length());
-        EntityBuilder builder = api.getEntityBuilder();
-        for (int i = 0; i < array.length(); i++) {
-            try {
+        EntityBuilder builder = api.get().getEntityBuilder();
+        for (int i = 0; i < array.length(); i++)
+        {
+            try
+            {
                 Message msg = builder.createMessage(array.getJSONObject(i), channel, false);
                 messages.add(msg);
                 if (useCache)
                     cached.add(msg);
                 last = msg;
-            } catch (JSONException | NullPointerException e) {
+            }
+            catch (JSONException | NullPointerException e)
+            {
                 LOG.warn("Encountered an exception in MessagePagination", e);
             }
         }

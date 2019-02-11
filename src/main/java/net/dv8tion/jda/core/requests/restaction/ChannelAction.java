@@ -46,10 +46,12 @@ public class ChannelAction extends AuditableRestAction<Channel>
     protected final ChannelType type;
     protected String name;
     protected Category parent;
+    protected Integer position;
 
     // --text only--
     protected String topic = null;
     protected Boolean nsfw = null;
+    protected Integer slowmode = null;
 
     // --voice only--
     protected Integer bitrate = null;
@@ -86,10 +88,10 @@ public class ChannelAction extends AuditableRestAction<Channel>
      * Sets the name for the new Channel
      *
      * @param  name
-     *         The not-null name for the new Channel (2-100 chars long)
+     *         The not-null name for the new Channel (1-100 chars long)
      *
      * @throws java.lang.IllegalArgumentException
-     *         If the provided name is null or not between 2-100 chars long
+     *         If the provided name is null or not between 1-100 chars long
      *
      * @return The current ChannelAction, for chaining convenience
      */
@@ -97,8 +99,8 @@ public class ChannelAction extends AuditableRestAction<Channel>
     public ChannelAction setName(String name)
     {
         Checks.notNull(name, "Channel name");
-        if (name.length() < 2 || name.length() > 100)
-            throw new IllegalArgumentException("Provided channel name must be 2 to 100 characters in length");
+        if (name.length() < 1 || name.length() > 100)
+            throw new IllegalArgumentException("Provided channel name must be 1 to 100 characters in length");
 
         this.name = name;
         return this;
@@ -123,6 +125,33 @@ public class ChannelAction extends AuditableRestAction<Channel>
     {
         Checks.check(category == null || category.getGuild().equals(guild), "Category is not from same guild!");
         this.parent = category;
+        return this;
+    }
+
+    /**
+     * Sets the position where the new Channel should be inserted into.
+     * This refers to the raw position value, not the computed (relative) position.
+     * <p>
+     * By default (or by providing this method with {@code null}),
+     * the position will automatically be computed based on the other Channels (inserted last in its respective group).
+     * <p>
+     * Note: This does not shift the position values of existing Channels if the values collide.
+     * <br>As a reminder: The ordering of Channels is determined first by its Category's position, then by its raw
+     * position value and finally by its id (younger Channels are below older ones)
+     *
+     * @param  position
+     *         The raw position value that should be used for the new Channel
+     *
+     * @throws IllegalArgumentException
+     *         If the provided position value is {@code <0}
+     *
+     * @return The current ChannelAction, for chaining convenience
+     */
+    @CheckReturnValue
+    public ChannelAction setPosition(Integer position)
+    {
+        Checks.check(position == null || position >= 0, "Position must be >= 0!");
+        this.position = position;
         return this;
     }
 
@@ -167,6 +196,33 @@ public class ChannelAction extends AuditableRestAction<Channel>
         if (type != ChannelType.TEXT)
             throw new UnsupportedOperationException("Can only set nsfw for a TextChannel!");
         this.nsfw = nsfw;
+        return this;
+    }
+
+    /**
+     * Sets the slowmode value, which limits the amount of time that individual users must wait
+     * between sending messages in the new TextChannel. This is measured in seconds.
+     *
+     * <p>Note that only {@link net.dv8tion.jda.core.AccountType#CLIENT CLIENT} type accounts are
+     * affected by slowmode, and that {@link net.dv8tion.jda.core.AccountType#BOT BOT} accounts
+     * are immune to the restrictions.
+     * <br>Having {@link net.dv8tion.jda.core.Permission#MESSAGE_MANAGE MESSAGE_MANAGE} or
+     * {@link net.dv8tion.jda.core.Permission#MANAGE_CHANNEL MANAGE_CHANNEL} permission also
+     * grants immunity to slowmode.
+     *
+     * @param  slowmode
+     *         The number of seconds required to wait between sending messages in the channel.
+     *
+     * @throws IllegalArgumentException
+     *         If the {@code slowmode} is greater than 120, or less than 0
+     *
+     * @return The current ChannelAction, for chaining convenience
+     */
+    @CheckReturnValue
+    public ChannelAction setSlowmode(int slowmode)
+    {
+        Checks.check(slowmode <= 120 && slowmode >= 0, "Slowmode must be between 0 and 120 (seconds)!");
+        this.slowmode = slowmode;
         return this;
     }
 
@@ -330,6 +386,8 @@ public class ChannelAction extends AuditableRestAction<Channel>
         object.put("name", name);
         object.put("type", type.getId());
         object.put("permission_overwrites", new JSONArray(overrides));
+        if (position != null)
+            object.put("position", position);
         switch (type)
         {
             case VOICE:
@@ -343,6 +401,8 @@ public class ChannelAction extends AuditableRestAction<Channel>
                     object.put("topic", topic);
                 if (nsfw != null)
                     object.put("nsfw", nsfw);
+                if (slowmode != null)
+                    object.put("rate_limit_per_user", slowmode);
         }
         if (type != ChannelType.CATEGORY && parent != null)
             object.put("parent_id", parent.getId());
@@ -359,7 +419,7 @@ public class ChannelAction extends AuditableRestAction<Channel>
             return;
         }
 
-        EntityBuilder builder = api.getEntityBuilder();;
+        EntityBuilder builder = api.get().getEntityBuilder();
         Channel channel;
         switch (type)
         {

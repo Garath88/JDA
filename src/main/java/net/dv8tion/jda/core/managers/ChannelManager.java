@@ -27,6 +27,7 @@ import net.dv8tion.jda.core.managers.impl.ManagerBase;
 import net.dv8tion.jda.core.requests.Route;
 import net.dv8tion.jda.core.requests.restaction.PermOverrideData;
 import net.dv8tion.jda.core.utils.Checks;
+import net.dv8tion.jda.core.utils.cache.UpstreamReference;
 import okhttp3.RequestBody;
 import org.json.JSONObject;
 
@@ -54,29 +55,32 @@ import java.util.Collection;
 public class ChannelManager extends ManagerBase
 {
     /** Used to reset the name field */
-    public static final long NAME      = 0x1;
+    public static final long NAME       = 0x1;
     /** Used to reset the parent field */
-    public static final long PARENT    = 0x2;
+    public static final long PARENT     = 0x2;
     /** Used to reset the topic field */
-    public static final long TOPIC     = 0x4;
+    public static final long TOPIC      = 0x4;
     /** Used to reset the position field */
-    public static final long POSITION  = 0x8;
+    public static final long POSITION   = 0x8;
     /** Used to reset the nsfw field */
-    public static final long NSFW      = 0x10;
+    public static final long NSFW       = 0x10;
     /** Used to reset the userlimit field */
-    public static final long USERLIMIT = 0x20;
+    public static final long USERLIMIT  = 0x20;
     /** Used to reset the bitrate field */
-    public static final long BITRATE   = 0x40;
+    public static final long BITRATE    = 0x40;
     /** Used to reset the permission field */
     public static final long PERMISSION = 0x80;
+    /** Used to reset the rate-limit per user field */
+    public static final long SLOWMODE   = 0x100;
 
-    protected final Channel channel;
+    protected final UpstreamReference<Channel> channel;
 
     protected String name;
     protected String parent;
     protected String topic;
     protected int position;
     protected boolean nsfw;
+    protected int slowmode;
     protected int userlimit;
     protected int bitrate;
 
@@ -95,7 +99,7 @@ public class ChannelManager extends ManagerBase
     {
         super(channel.getJDA(),
               Route.Channels.MODIFY_CHANNEL.compile(channel.getId()));
-        this.channel = channel;
+        this.channel = new UpstreamReference<>(channel);
         if (isPermissionChecksEnabled())
             checkPermissions();
         this.overridesAdd = new TLongObjectHashMap<>();
@@ -109,7 +113,7 @@ public class ChannelManager extends ManagerBase
      */
     public ChannelType getType()
     {
-        return channel.getType();
+        return getChannel().getType();
     }
 
     /**
@@ -120,7 +124,7 @@ public class ChannelManager extends ManagerBase
      */
     public Channel getChannel()
     {
-        return channel;
+        return channel.get();
     }
 
     /**
@@ -132,7 +136,7 @@ public class ChannelManager extends ManagerBase
      */
     public Guild getGuild()
     {
-        return channel.getGuild();
+        return getChannel().getGuild();
     }
 
     /**
@@ -147,6 +151,7 @@ public class ChannelManager extends ManagerBase
      *     <li>{@link #TOPIC}</li>
      *     <li>{@link #POSITION}</li>
      *     <li>{@link #NSFW}</li>
+     *     <li>{@link #SLOWMODE}</li>
      *     <li>{@link #USERLIMIT}</li>
      *     <li>{@link #BITRATE}</li>
      *     <li>{@link #PERMISSION}</li>
@@ -289,7 +294,7 @@ public class ChannelManager extends ManagerBase
     {
         Checks.notNull(permHolder, "PermissionHolder");
         Checks.check(permHolder.getGuild().equals(getGuild()), "PermissionHolder is not from the same Guild!");
-        if (isPermissionChecksEnabled() && !getGuild().getSelfMember().hasPermission(channel, Permission.MANAGE_PERMISSIONS))
+        if (isPermissionChecksEnabled() && !getGuild().getSelfMember().hasPermission(getChannel(), Permission.MANAGE_PERMISSIONS))
             throw new InsufficientPermissionException(Permission.MANAGE_PERMISSIONS);
         final long id = getId(permHolder);
         final int type = permHolder instanceof Role ? PermOverrideData.ROLE_TYPE : PermOverrideData.MEMBER_TYPE;
@@ -355,7 +360,7 @@ public class ChannelManager extends ManagerBase
     {
         Checks.notNull(permHolder, "PermissionHolder");
         Checks.check(permHolder.getGuild().equals(getGuild()), "PermissionHolder is not from the same Guild!");
-        if (isPermissionChecksEnabled() && !getGuild().getSelfMember().hasPermission(channel, Permission.MANAGE_PERMISSIONS))
+        if (isPermissionChecksEnabled() && !getGuild().getSelfMember().hasPermission(getChannel(), Permission.MANAGE_PERMISSIONS))
             throw new InsufficientPermissionException(Permission.MANAGE_PERMISSIONS);
         final long id = getId(permHolder);
         withLock(lock, (lock) ->
@@ -390,9 +395,9 @@ public class ChannelManager extends ManagerBase
     @CheckReturnValue
     public ChannelManager sync()
     {
-        if(channel.getParent() == null)
+        if(getChannel().getParent() == null)
             throw new IllegalStateException("sync() requires a parent category");
-        return sync(channel.getParent());
+        return sync(getChannel().getParent());
     }
 
     /**
@@ -422,12 +427,12 @@ public class ChannelManager extends ManagerBase
     public ChannelManager sync(Channel syncSource)
     {
         Checks.notNull(syncSource, "SyncSource");
-        Checks.check(channel.getGuild().equals(syncSource.getGuild()), "Sync only works for channels of same guild");
+        Checks.check(getGuild().equals(syncSource.getGuild()), "Sync only works for channels of same guild");
 
-        if(syncSource.equals(channel))
+        if(syncSource.equals(getChannel()))
             return this;
 
-        if (isPermissionChecksEnabled() && !getGuild().getSelfMember().hasPermission(channel, Permission.MANAGE_PERMISSIONS))
+        if (isPermissionChecksEnabled() && !getGuild().getSelfMember().hasPermission(getChannel(), Permission.MANAGE_PERMISSIONS))
             throw new InsufficientPermissionException(Permission.MANAGE_PERMISSIONS);
 
         withLock(lock, (lock) ->
@@ -436,7 +441,7 @@ public class ChannelManager extends ManagerBase
             this.overridesAdd.clear();
 
             //set all current overrides to-be-removed
-            channel.getPermissionOverrides().forEach(permO ->
+            getChannel().getPermissionOverrides().forEach(permO ->
                 this.overridesRem.add(getId(permO.isRoleOverride() ? permO.getRole() : permO.getMember()))
             );
 
@@ -458,7 +463,7 @@ public class ChannelManager extends ManagerBase
     /**
      * Sets the <b><u>name</u></b> of the selected {@link net.dv8tion.jda.core.entities.Channel Channel}.
      *
-     * <p>A channel name <b>must not</b> be {@code null} nor less than 2 characters or more than 100 characters long!
+     * <p>A channel name <b>must not</b> be {@code null} nor empty or more than 100 characters long!
      * <br>TextChannel names may only be populated with alphanumeric (with underscore and dash).
      *
      * <p><b>Example</b>: {@code mod-only} or {@code generic_name}
@@ -468,7 +473,7 @@ public class ChannelManager extends ManagerBase
      *         The new name for the selected {@link net.dv8tion.jda.core.entities.Channel Channel}
      *
      * @throws IllegalArgumentException
-     *         If the provided name is {@code null} or not between 2-100 characters long
+     *         If the provided name is {@code null} or not between 1-100 characters long
      *
      * @return ChannelManager for chaining convenience
      */
@@ -476,9 +481,9 @@ public class ChannelManager extends ManagerBase
     public ChannelManager setName(String name)
     {
         Checks.notBlank(name, "Name");
-        Checks.check(name.length() >= 2 && name.length() <= 100, "Name must be between 2-100 characters long");
+        Checks.check(name.length() > 0 && name.length() <= 100, "Name must be between 1-100 characters long");
         if (getType() == ChannelType.TEXT)
-            //Checks.noWhitespace(name, "Name");
+            Checks.noWhitespace(name, "Name");
         this.name = name;
         set |= NAME;
         return this;
@@ -587,6 +592,41 @@ public class ChannelManager extends ManagerBase
     }
 
     /**
+     * Sets the <b><u>slowmode</u></b> of the selected {@link net.dv8tion.jda.core.entities.TextChannel TextChannel}.
+     * <br>Provide {@code 0} to reset the slowmode of the {@link net.dv8tion.jda.core.entities.TextChannel TextChannel}
+     *
+     * <p>A channel slowmode <b>must not</b> be negative nor greater than {@code 120}!
+     * <br><b>This is only available to {@link net.dv8tion.jda.core.entities.TextChannel TextChannels}</b>
+     *
+     * <p>Note that only {@link net.dv8tion.jda.core.AccountType#CLIENT CLIENT} type accounts are
+     * affected by slowmode, and that {@link net.dv8tion.jda.core.AccountType#BOT BOT} accounts
+     * are immune to the restrictions.
+     * <br>Having {@link net.dv8tion.jda.core.Permission#MESSAGE_MANAGE MESSAGE_MANAGE} or
+     * {@link net.dv8tion.jda.core.Permission#MANAGE_CHANNEL MANAGE_CHANNEL} permission also
+     * grants immunity to slowmode.
+     *
+     * @param  slowmode
+     *         The new slowmode for the selected {@link net.dv8tion.jda.core.entities.TextChannel TextChannel}
+     *
+     * @throws IllegalStateException
+     *         If the selected {@link net.dv8tion.jda.core.entities.Channel Channel}'s type is not {@link net.dv8tion.jda.core.entities.ChannelType#TEXT TEXT}
+     * @throws IllegalArgumentException
+     *         If the provided slowmode is negative or greater than {@code 120}
+     *
+     * @return ChannelManager for chaining convenience
+     */
+    @CheckReturnValue
+    public ChannelManager setSlowmode(int slowmode)
+    {
+        if (getType() != ChannelType.TEXT)
+            throw new IllegalStateException("Can only set slowmode on text channels");
+        Checks.check(slowmode <= 120 && slowmode >= 0, "Slowmode per user must be between 0 and 120 (seconds)!");
+        this.slowmode = slowmode;
+        set |= SLOWMODE;
+        return this;
+    }
+
+    /**
      * Sets the <b><u>user-limit</u></b> of the selected {@link net.dv8tion.jda.core.entities.VoiceChannel VoiceChannel}.
      * <br>Provide {@code 0} to reset the user-limit of the {@link net.dv8tion.jda.core.entities.VoiceChannel VoiceChannel}
      *
@@ -651,7 +691,7 @@ public class ChannelManager extends ManagerBase
     @Override
     protected RequestBody finalizeData()
     {
-        JSONObject frame = new JSONObject().put("name", channel.getName());
+        JSONObject frame = new JSONObject().put("name", getChannel().getName());
         if (shouldUpdate(NAME))
             frame.put("name", name);
         if (shouldUpdate(POSITION))
@@ -660,6 +700,8 @@ public class ChannelManager extends ManagerBase
             frame.put("topic", opt(topic));
         if (shouldUpdate(NSFW))
             frame.put("nsfw", nsfw);
+        if (shouldUpdate(SLOWMODE))
+            frame.put("rate_limit_per_user", slowmode);
         if (shouldUpdate(USERLIMIT))
             frame.put("user_limit", userlimit);
         if (shouldUpdate(BITRATE))
@@ -680,7 +722,7 @@ public class ChannelManager extends ManagerBase
     protected boolean checkPermissions()
     {
         final Member selfMember = getGuild().getSelfMember();
-        if (!selfMember.hasPermission(channel, Permission.MANAGE_CHANNEL))
+        if (!selfMember.hasPermission(getChannel(), Permission.MANAGE_CHANNEL))
             throw new InsufficientPermissionException(Permission.MANAGE_CHANNEL);
         return super.checkPermissions();
     }
@@ -690,7 +732,7 @@ public class ChannelManager extends ManagerBase
         //note: overridesAdd and overridesRem are mutually disjoint
         TLongObjectHashMap<PermOverrideData> data = new TLongObjectHashMap<>(this.overridesAdd);
 
-        AbstractChannelImpl<?> impl = (AbstractChannelImpl<?>) channel;
+        AbstractChannelImpl<?> impl = (AbstractChannelImpl<?>) getChannel();
         impl.getOverrideMap().forEachEntry((id, override) ->
         {
             //removed by not adding them here, this data set overrides the existing one

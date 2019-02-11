@@ -16,18 +16,20 @@
 package net.dv8tion.jda.bot.sharding;
 
 import com.neovisionaries.ws.client.WebSocketFactory;
+import net.dv8tion.jda.annotations.DeprecatedSince;
+import net.dv8tion.jda.annotations.ReplaceWith;
 import net.dv8tion.jda.core.OnlineStatus;
 import net.dv8tion.jda.core.audio.factory.IAudioSendFactory;
 import net.dv8tion.jda.core.entities.Game;
 import net.dv8tion.jda.core.hooks.IEventManager;
 import net.dv8tion.jda.core.utils.Checks;
 import net.dv8tion.jda.core.utils.SessionController;
+import net.dv8tion.jda.core.utils.cache.CacheFlag;
 import okhttp3.OkHttpClient;
 
 import javax.security.auth.login.LoginException;
 import java.util.*;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.*;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 
@@ -45,7 +47,7 @@ public class DefaultShardManagerBuilder
     protected final List<Object> listeners = new ArrayList<>();
     protected final List<IntFunction<Object>> listenerProviders = new ArrayList<>();
     protected SessionController sessionController = null;
-    protected IntFunction<ConcurrentMap<String, String>> contextProvider = null;
+    protected EnumSet<CacheFlag> cacheFlags = EnumSet.allOf(CacheFlag.class);
     protected boolean enableContext = true;
     protected boolean enableBulkDeleteSplitting = true;
     protected boolean enableShutdownHook = true;
@@ -56,14 +58,19 @@ public class DefaultShardManagerBuilder
     protected boolean enableCompression = true;
     protected int shardsTotal = -1;
     protected int maxReconnectDelay = 900;
-    protected int corePoolSize = 2;
+    protected int corePoolSize = 5;
     protected String token = null;
     protected IntFunction<Boolean> idleProvider = null;
-    protected IntFunction<Game> gameProvider = null;
     protected IntFunction<OnlineStatus> statusProvider = null;
+    protected IntFunction<? extends Game> gameProvider = null;
+    protected IntFunction<? extends ConcurrentMap<String, String>> contextProvider = null;
+    protected IntFunction<? extends IEventManager> eventManagerProvider = null;
+    protected ThreadPoolProvider<? extends ScheduledExecutorService> rateLimitPoolProvider = null;
+    protected ThreadPoolProvider<? extends ScheduledExecutorService> gatewayPoolProvider = null;
+    protected ThreadPoolProvider<? extends ExecutorService> callbackPoolProvider = null;
     protected Collection<Integer> shards = null;
-    protected IEventManager eventManager = null;
     protected OkHttpClient.Builder httpClientBuilder = null;
+    protected OkHttpClient httpClient = null;
     protected WebSocketFactory wsFactory = null;
     protected IAudioSendFactory audioSendFactory = null;
     protected ThreadFactory threadFactory = null;
@@ -77,6 +84,53 @@ public class DefaultShardManagerBuilder
     public DefaultShardManagerBuilder() {}
 
     /**
+     * Creates a DefaultShardManagerBuilder with the given token.
+     * <br>This is equivalent to using the constuctor
+     * {@link #DefaultShardManagerBuilder() DefaultShardManagerBuilder()}
+     * and calling {@link #setToken(String) setToken(String)}
+     * directly afterward. You can always change the token later with
+     * {@link #setToken(String) setToken(String)}.
+     *
+     * @param token
+     *        The login token
+     */
+    public DefaultShardManagerBuilder(String token)
+    {
+        this.setToken(token);
+    }
+
+    /**
+     * Flags used to enable parts of the JDA cache to reduce the runtime memory footprint.
+     * <br><b>It is highly recommended to use {@link #setDisabledCacheFlags(EnumSet)} instead
+     * for backwards compatibility</b>. We might add more flags in the future which you then effectively disable
+     * when updating and not changing your setting here.
+     *
+     * @param  flags
+     *         EnumSet containing the flags for cache services that should be <b>enabled</b>
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setEnabledCacheFlags(EnumSet<CacheFlag> flags)
+    {
+        this.cacheFlags = flags == null ? EnumSet.noneOf(CacheFlag.class) : EnumSet.copyOf(flags);
+        return this;
+    }
+
+    /**
+     * Flags used to disable parts of the JDA cache to reduce the runtime memory footprint.
+     * <br>Shortcut for {@code setEnabledCacheFlags(EnumSet.complementOf(flags))}
+     *
+     * @param  flags
+     *         EnumSet containing the flags for cache services that should be <b>disabled</b>
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setDisabledCacheFlags(EnumSet<CacheFlag> flags)
+    {
+        return setEnabledCacheFlags(EnumSet.complementOf(flags));
+    }
+
+    /**
      * Sets the {@link net.dv8tion.jda.core.utils.SessionController SessionController}
      * for the resulting ShardManager instance. This can be used to sync behaviour and state between shards
      * of a bot and should be one and the same instance on all builders for the shards.
@@ -84,7 +138,7 @@ public class DefaultShardManagerBuilder
      * @param  controller
      *         The {@link net.dv8tion.jda.core.utils.SessionController SessionController} to use
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.utils.SessionControllerAdapter SessionControllerAdapter
      */
@@ -106,18 +160,17 @@ public class DefaultShardManagerBuilder
      * @param  provider
      *         The provider for <b>modifiable</b> context maps to use in JDA, or {@code null} to reset
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    <a href="https://www.slf4j.org/api/org/slf4j/MDC.html" target="_blank">MDC Javadoc</a>
      */
-    public DefaultShardManagerBuilder setContextMap(IntFunction<ConcurrentMap<String, String>> provider)
+    public DefaultShardManagerBuilder setContextMap(IntFunction<? extends ConcurrentMap<String, String>> provider)
     {
         this.contextProvider = provider;
         if (provider != null)
             this.enableContext = true;
         return this;
     }
-
 
     /**
      * Whether JDA should use a synchronized MDC context for all of its controlled threads.
@@ -126,7 +179,7 @@ public class DefaultShardManagerBuilder
      * @param  enable
      *         True, if JDA should provide an MDC context map
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    <a href="https://www.slf4j.org/api/org/slf4j/MDC.html" target="_blank">MDC Javadoc</a>
      * @see    #setContextMap(java.util.function.IntFunction)
@@ -149,7 +202,7 @@ public class DefaultShardManagerBuilder
      * @param  enable
      *         True, if the gateway connection should use compression
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    <a href="https://discordapp.com/developers/docs/topics/gateway#transport-compression" target="_blank">Official Discord Documentation - Transport Compression</a>
      */
@@ -163,7 +216,7 @@ public class DefaultShardManagerBuilder
      * Adds all provided listeners to the list of listeners that will be used to populate the {@link DefaultShardManager DefaultShardManager} object.
      * <br>This uses the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} by default.
      * <br>To switch to the {@link net.dv8tion.jda.core.hooks.AnnotatedEventManager AnnotatedEventManager},
-     * use {@link #setEventManager(net.dv8tion.jda.core.hooks.IEventManager) setEventManager(new AnnotatedEventManager())}.
+     * use {@link #setEventManagerProvider(IntFunction) setEventManagerProvider(id -> new AnnotatedEventManager())}.
      *
      * <p><b>Note:</b> When using the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} (default),
      * given listener(s) <b>must</b> be instance of {@link net.dv8tion.jda.core.hooks.EventListener EventListener}!
@@ -171,7 +224,7 @@ public class DefaultShardManagerBuilder
      * @param  listeners
      *         The listener(s) to add to the list.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    DefaultShardManager#addEventListener(Object...) JDA.addEventListener(Object...)
      */
@@ -184,7 +237,7 @@ public class DefaultShardManagerBuilder
      * Adds all provided listeners to the list of listeners that will be used to populate the {@link DefaultShardManager DefaultShardManager} object.
      * <br>This uses the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} by default.
      * <br>To switch to the {@link net.dv8tion.jda.core.hooks.AnnotatedEventManager AnnotatedEventManager},
-     * use {@link #setEventManager(net.dv8tion.jda.core.hooks.IEventManager) setEventManager(new AnnotatedEventManager())}.
+     * use {@link #setEventManagerProvider(IntFunction) setEventManager(id -> new AnnotatedEventManager())}.
      *
      * <p><b>Note:</b> When using the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} (default),
      * given listener(s) <b>must</b> be instance of {@link net.dv8tion.jda.core.hooks.EventListener EventListener}!
@@ -192,7 +245,7 @@ public class DefaultShardManagerBuilder
      * @param  listeners
      *         The listener(s) to add to the list.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    DefaultShardManager#addEventListener(Object...) JDA.addEventListener(Object...)
      */
@@ -210,7 +263,7 @@ public class DefaultShardManagerBuilder
      * @param  listeners
      *         The listener(s) to remove from the list.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.JDA#removeEventListener(Object...) JDA.removeEventListener(Object...)
      */
@@ -225,7 +278,7 @@ public class DefaultShardManagerBuilder
      * @param  listeners
      *         The listener(s) to remove from the list.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.JDA#removeEventListener(Object...) JDA.removeEventListener(Object...)
      */
@@ -244,7 +297,7 @@ public class DefaultShardManagerBuilder
      *
      * <br>This uses the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} by default.
      * <br>To switch to the {@link net.dv8tion.jda.core.hooks.AnnotatedEventManager AnnotatedEventManager},
-     * use {@link #setEventManager(net.dv8tion.jda.core.hooks.IEventManager) setEventManager(new AnnotatedEventManager())}.
+     * use {@link #setEventManagerProvider(IntFunction) setEventManager(id -> new AnnotatedEventManager())}.
      *
      * <p><b>Note:</b> When using the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} (default),
      * given listener(s) <b>must</b> be instance of {@link net.dv8tion.jda.core.hooks.EventListener EventListener}!
@@ -252,7 +305,7 @@ public class DefaultShardManagerBuilder
      * @param  listenerProvider
      *         The listener provider to add to the list of listener providers.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder addEventListenerProvider(final IntFunction<Object> listenerProvider)
     {
@@ -266,7 +319,7 @@ public class DefaultShardManagerBuilder
      *
      * <br>This uses the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} by default.
      * <br>To switch to the {@link net.dv8tion.jda.core.hooks.AnnotatedEventManager AnnotatedEventManager},
-     * use {@link #setEventManager(net.dv8tion.jda.core.hooks.IEventManager) setEventManager(new AnnotatedEventManager())}.
+     * use {@link #setEventManagerProvider(IntFunction) setEventManager(id -> new AnnotatedEventManager())}.
      *
      * <p><b>Note:</b> When using the {@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventListener} (default),
      * given listener(s) <b>must</b> be instance of {@link net.dv8tion.jda.core.hooks.EventListener EventListener}!
@@ -274,7 +327,7 @@ public class DefaultShardManagerBuilder
      * @param  listenerProviders
      *         The listener provider to add to the list of listener providers.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder addEventListenerProviders(final Collection<IntFunction<Object>> listenerProviders)
     {
@@ -290,7 +343,7 @@ public class DefaultShardManagerBuilder
      * @param  listenerProvider
      *         The listener provider to remove from the list of listener providers.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder removeEventListenerProvider(final IntFunction<Object> listenerProvider)
     {
@@ -303,7 +356,7 @@ public class DefaultShardManagerBuilder
      * @param  listenerProviders
      *         The listener provider(s) to remove from the list of listener providers.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder removeEventListenerProviders(final Collection<IntFunction<Object>> listenerProviders)
     {
@@ -322,7 +375,7 @@ public class DefaultShardManagerBuilder
      * @param  enabled
      *         True - enables voice support.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setAudioEnabled(final boolean enabled)
     {
@@ -339,7 +392,7 @@ public class DefaultShardManagerBuilder
      *         The new {@link net.dv8tion.jda.core.audio.factory.IAudioSendFactory IAudioSendFactory} to be used
      *         when creating new {@link net.dv8tion.jda.core.audio.factory.IAudioSendSystem} objects.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setAudioSendFactory(final IAudioSendFactory factory)
     {
@@ -356,7 +409,7 @@ public class DefaultShardManagerBuilder
      * @param  autoReconnect
      *         If true - enables autoReconnect
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setAutoReconnect(final boolean autoReconnect)
     {
@@ -374,7 +427,7 @@ public class DefaultShardManagerBuilder
      * @param  enabled
      *         True - The MESSAGE_DELETE_BULK will be split into multiple individual MessageDeleteEvents.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setBulkDeleteSplittingEnabled(final boolean enabled)
     {
@@ -383,9 +436,10 @@ public class DefaultShardManagerBuilder
     }
 
     /**
-     * Sets the core pool size for the global JDA
-     * {@link java.util.concurrent.ScheduledExecutorService ScheduledExecutorService} which is used
-     * in various locations throughout the JDA instance created by this ShardManager. (Default: 2)
+     * Sets the core pool size for the global JDA {@link java.util.concurrent.ScheduledExecutorService ScheduledExecutorService}
+     * which is used in various locations throughout the JDA instance created by this ShardManager. (Default: 5)
+     * <br>Note: This has no effect if you set a pool using
+     * {@link #setRateLimitPool(ScheduledExecutorService)} or {@link #setRateLimitPoolProvider(ThreadPoolProvider)}.
      *
      * @param  size
      *         The core pool size for the global JDA executor
@@ -393,7 +447,7 @@ public class DefaultShardManagerBuilder
      * @throws java.lang.IllegalArgumentException
      *         If the specified core pool size is not positive
      *
-     * @return The {@link net.dv8tion.jda.core.JDABuilder JDABuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setCorePoolSize(int size)
     {
@@ -412,7 +466,7 @@ public class DefaultShardManagerBuilder
      * @param  enable
      *         True (default) - use shutdown hook to clean up the ShardManager and it's JDA instances if the Java program is closed.
      *
-     * @return Return the {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setEnableShutdownHook(final boolean enable)
     {
@@ -436,13 +490,42 @@ public class DefaultShardManagerBuilder
      * @param  manager
      *         The new {@link net.dv8tion.jda.core.hooks.IEventManager} to use.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     *
+     * @deprecated Use {@link #setEventManagerProvider(IntFunction)} instead
      */
+    @Deprecated
+    @DeprecatedSince("3.8.1")
+    @ReplaceWith("setEventManagerProvider((id) -> manager)")
     public DefaultShardManagerBuilder setEventManager(final IEventManager manager)
     {
         Checks.notNull(manager, "manager");
 
-        this.eventManager = manager;
+        return setEventManagerProvider((id) -> manager);
+    }
+
+    /**
+     * Sets a provider to change the internally used EventManager.
+     * <br>There are 2 provided Implementations:
+     * <ul>
+     *     <li>{@link net.dv8tion.jda.core.hooks.InterfacedEventManager InterfacedEventManager} which uses the Interface
+     *     {@link net.dv8tion.jda.core.hooks.EventListener EventListener} (tip: use the {@link net.dv8tion.jda.core.hooks.ListenerAdapter ListenerAdapter}).
+     *     <br>This is the default EventManager.</li>
+     *
+     *     <li>{@link net.dv8tion.jda.core.hooks.AnnotatedEventManager AnnotatedEventManager} which uses the Annotation
+     *         {@link net.dv8tion.jda.core.hooks.SubscribeEvent @SubscribeEvent} to mark the methods that listen for events.</li>
+     * </ul>
+     * <br>You can also create your own EventManager (See {@link net.dv8tion.jda.core.hooks.IEventManager}).
+     *
+     * @param  eventManagerProvider
+     *         A supplier for the new {@link net.dv8tion.jda.core.hooks.IEventManager} to use.
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setEventManagerProvider(final IntFunction<? extends IEventManager> eventManagerProvider)
+    {
+        Checks.notNull(eventManagerProvider, "eventManagerProvider");
+        this.eventManagerProvider = eventManagerProvider;
         return this;
     }
 
@@ -457,7 +540,7 @@ public class DefaultShardManagerBuilder
      * @param  game
      *         An instance of {@link net.dv8tion.jda.core.entities.Game Game} (null allowed)
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.managers.Presence#setGame(Game)
      */
@@ -477,11 +560,11 @@ public class DefaultShardManagerBuilder
      * @param  gameProvider
      *         An instance of {@link net.dv8tion.jda.core.entities.Game Game} (null allowed)
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.managers.Presence#setGame(Game)
      */
-    public DefaultShardManagerBuilder setGameProvider(final IntFunction<Game> gameProvider)
+    public DefaultShardManagerBuilder setGameProvider(final IntFunction<? extends Game> gameProvider)
     {
         this.gameProvider = gameProvider;
         return this;
@@ -495,7 +578,7 @@ public class DefaultShardManagerBuilder
      * @param  idle
      *         boolean value that will be provided with our IDENTIFY packages to mark our sessions as afk or not. <b>(default false)</b>
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.managers.Presence#setIdle(boolean)
      */
@@ -512,7 +595,7 @@ public class DefaultShardManagerBuilder
      * @param  idleProvider
      *         boolean value that will be provided with our IDENTIFY packages to mark our sessions as afk or not. <b>(default false)</b>
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.managers.Presence#setIdle(boolean)
      */
@@ -535,7 +618,7 @@ public class DefaultShardManagerBuilder
      * @throws IllegalArgumentException
      *         if the provided OnlineStatus is null or {@link net.dv8tion.jda.core.OnlineStatus#UNKNOWN UNKNOWN}
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.managers.Presence#setStatus(OnlineStatus) Presence.setStatusProvider(OnlineStatus)
      */
@@ -560,7 +643,7 @@ public class DefaultShardManagerBuilder
      * @throws IllegalArgumentException
      *         if the provided OnlineStatus is null or {@link net.dv8tion.jda.core.OnlineStatus#UNKNOWN UNKNOWN}
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    net.dv8tion.jda.core.managers.Presence#setStatus(OnlineStatus) Presence.setStatusProvider(OnlineStatus)
      */
@@ -578,7 +661,7 @@ public class DefaultShardManagerBuilder
      * @param  threadFactory
      *         The ThreadFactory or {@code null} to reset to the default value.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setThreadFactory(final ThreadFactory threadFactory)
     {
@@ -593,11 +676,183 @@ public class DefaultShardManagerBuilder
      * @param  builder
      *         The new {@link okhttp3.OkHttpClient.Builder OkHttpClient.Builder} to use.
      *
-     * @return Returns the {@link net.dv8tion.jda.core.JDABuilder JDABuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setHttpClientBuilder(OkHttpClient.Builder builder)
     {
         this.httpClientBuilder = builder;
+        return this;
+    }
+
+    /**
+     * Sets the {@link okhttp3.OkHttpClient OkHttpClient} that will be used by JDAs requester.
+     * <br>This can be used to set things such as connection timeout and proxy.
+     *
+     * @param  client
+     *         The new {@link okhttp3.OkHttpClient OkHttpClient} to use
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setHttpClient(OkHttpClient client)
+    {
+        this.httpClient = client;
+        return this;
+    }
+
+    /**
+     * Sets the {@link ScheduledExecutorService ScheduledExecutorService} that should be used in
+     * the JDA rate-limit handler. Changing this can drastically change the JDA behavior for RestAction execution
+     * and should be handled carefully. <b>Only change this pool if you know what you're doing.</b>
+     * <br>This will override the rate-limit pool provider set from {@link #setRateLimitPoolProvider(ThreadPoolProvider)}.
+     * <br><b>This automatically disables the automatic shutdown of the rate-limit pool, you can enable
+     * it using {@link #setRateLimitPool(ScheduledExecutorService, boolean) setRateLimiPool(executor, true)}</b>
+     *
+     * @param  pool
+     *         The thread-pool to use for rate-limit handling
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setRateLimitPool(ScheduledExecutorService pool)
+    {
+        return setRateLimitPool(pool, pool == null);
+    }
+
+    /**
+     * Sets the {@link ScheduledExecutorService ScheduledExecutorService} that should be used in
+     * the JDA rate-limit handler. Changing this can drastically change the JDA behavior for RestAction execution
+     * and should be handled carefully. <b>Only change this pool if you know what you're doing.</b>
+     * <br>This will override the rate-limit pool provider set from {@link #setRateLimitPoolProvider(ThreadPoolProvider)}.
+     *
+     * @param  pool
+     *         The thread-pool to use for rate-limit handling
+     * @param  automaticShutdown
+     *         Whether {@link net.dv8tion.jda.core.JDA#shutdown()} should automatically shutdown this pool
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setRateLimitPool(ScheduledExecutorService pool, boolean automaticShutdown)
+    {
+        return setRateLimitPoolProvider(pool == null ? null : new ThreadPoolProviderImpl<>(pool, automaticShutdown));
+    }
+
+    /**
+     * Sets the {@link ScheduledExecutorService ScheduledExecutorService} provider that should be used in
+     * the JDA rate-limit handler. Changing this can drastically change the JDA behavior for RestAction execution
+     * and should be handled carefully. <b>Only change this pool if you know what you're doing.</b>
+     *
+     * @param  provider
+     *         The thread-pool provider to use for rate-limit handling
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setRateLimitPoolProvider(ThreadPoolProvider<? extends ScheduledExecutorService> provider)
+    {
+        this.rateLimitPoolProvider = provider;
+        return this;
+    }
+
+    /**
+     * Sets the {@link ScheduledExecutorService ScheduledExecutorService} that should be used for
+     * the JDA main WebSocket workers.
+     * <br><b>Only change this pool if you know what you're doing.</b>
+     * <br>This will override the worker pool provider set from {@link #setGatewayPoolProvider(ThreadPoolProvider)}.
+     * <br><b>This automatically disables the automatic shutdown of the main-ws pools, you can enable
+     * it using {@link #setGatewayPool(ScheduledExecutorService, boolean) setGatewayPoolProvider(pool, true)}</b>
+     *
+     * @param  pool
+     *         The thread-pool to use for main WebSocket workers
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setGatewayPool(ScheduledExecutorService pool)
+    {
+        return setGatewayPool(pool, pool == null);
+    }
+
+    /**
+     * Sets the {@link ScheduledExecutorService ScheduledExecutorService} that should be used for
+     * the JDA main WebSocket workers.
+     * <br><b>Only change this pool if you know what you're doing.</b>
+     * <br>This will override the worker pool provider set from {@link #setGatewayPoolProvider(ThreadPoolProvider)}.
+     *
+     * @param  pool
+     *         The thread-pool to use for main WebSocket workers
+     * @param  automaticShutdown
+     *         Whether {@link net.dv8tion.jda.core.JDA#shutdown()} should automatically shutdown this pool
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setGatewayPool(ScheduledExecutorService pool, boolean automaticShutdown)
+    {
+        return setGatewayPoolProvider(pool == null ? null : new ThreadPoolProviderImpl<>(pool, automaticShutdown));
+    }
+
+    /**
+     * Sets the {@link ScheduledExecutorService ScheduledExecutorService} that should be used for
+     * the JDA main WebSocket workers.
+     * <br><b>Only change this pool if you know what you're doing.</b>
+     *
+     * @param  provider
+     *         The thread-pool provider to use for main WebSocket workers
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setGatewayPoolProvider(ThreadPoolProvider<? extends ScheduledExecutorService> provider)
+    {
+        this.gatewayPoolProvider = provider;
+        return this;
+    }
+
+    /**
+     * Sets the {@link ExecutorService ExecutorService} that should be used in
+     * the JDA callback handler which mostly consists of {@link net.dv8tion.jda.core.requests.RestAction RestAction} callbacks.
+     * By default JDA will use {@link ForkJoinPool#commonPool()}
+     * <br><b>Only change this pool if you know what you're doing.
+     * <br>This automatically disables the automatic shutdown of the callback pools, you can enable
+     * it using {@link #setCallbackPool(ExecutorService, boolean) setCallbackPool(executor, true)}</b>
+     *
+     * @param  executor
+     *         The thread-pool to use for callback handling
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setCallbackPool(ExecutorService executor)
+    {
+        return setCallbackPool(executor, executor == null);
+    }
+
+    /**
+     * Sets the {@link ExecutorService ExecutorService} that should be used in
+     * the JDA callback handler which mostly consists of {@link net.dv8tion.jda.core.requests.RestAction RestAction} callbacks.
+     * By default JDA will use {@link ForkJoinPool#commonPool()}
+     * <br><b>Only change this pool if you know what you're doing.</b>
+     *
+     * @param  executor
+     *         The thread-pool to use for callback handling
+     * @param  automaticShutdown
+     *         Whether {@link net.dv8tion.jda.core.JDA#shutdown()} should automatically shutdown this pool
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setCallbackPool(ExecutorService executor, boolean automaticShutdown)
+    {
+        return setCallbackPoolProvider(executor == null ? null : new ThreadPoolProviderImpl<>(executor, automaticShutdown));
+    }
+
+    /**
+     * Sets the {@link ExecutorService ExecutorService} that should be used in
+     * the JDA callback handler which mostly consists of {@link net.dv8tion.jda.core.requests.RestAction RestAction} callbacks.
+     * By default JDA will use {@link ForkJoinPool#commonPool()}
+     * <br><b>Only change this pool if you know what you're doing.</b>
+     *
+     * @param  provider
+     *         The thread-pool provider to use for callback handling
+     *
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
+     */
+    public DefaultShardManagerBuilder setCallbackPoolProvider(ThreadPoolProvider<? extends ExecutorService> provider)
+    {
+        this.callbackPoolProvider = provider;
         return this;
     }
 
@@ -611,7 +866,7 @@ public class DefaultShardManagerBuilder
      * @throws java.lang.IllegalArgumentException
      *         Thrown if the provided {@code maxReconnectDelay} is less than 32.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setMaxReconnectDelay(final int maxReconnectDelay)
     {
@@ -631,7 +886,7 @@ public class DefaultShardManagerBuilder
      * @param  retryOnTimeout
      *         True, if the Request should retry once on a socket timeout
      *
-     * @return The {@link net.dv8tion.jda.core.JDABuilder JDABuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setRequestTimeoutRetry(boolean retryOnTimeout)
     {
@@ -647,7 +902,7 @@ public class DefaultShardManagerBuilder
      * @param  shardIds
      *         The list of shard ids
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setShards(final int... shardIds)
     {
@@ -679,7 +934,7 @@ public class DefaultShardManagerBuilder
      *         If either minShardId is negative, maxShardId is lower than shardsTotal or
      *         minShardId is lower than or equal to maxShardId
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setShards(final int minShardId, final int maxShardId)
     {
@@ -709,7 +964,7 @@ public class DefaultShardManagerBuilder
      *         If either minShardId is negative, maxShardId is lower than shardsTotal or
      *         minShardId is lower than or equal to maxShardId
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setShards(Collection<Integer> shardIds)
     {
@@ -732,7 +987,7 @@ public class DefaultShardManagerBuilder
      * @param  shardsTotal
      *         The number of overall shards or {@code -1} if JDA should use the recommended amount from discord.
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see    #setShards(int, int)
      */
@@ -762,7 +1017,7 @@ public class DefaultShardManagerBuilder
      * @throws java.lang.IllegalArgumentException
      *         If the token is either null or empty
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setToken(final String token)
     {
@@ -781,7 +1036,7 @@ public class DefaultShardManagerBuilder
      * @param  useShutdownNow
      *         Whether the ShardManager should use JDA#shutdown() or not
      *
-     * @return The {@link net.dv8tion.jda.bot.sharding.DefaultShardManagerBuilder DefaultShardManagerBuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      *
      * @see net.dv8tion.jda.core.JDA#shutdown()
      * @see net.dv8tion.jda.core.JDA#shutdownNow()
@@ -799,7 +1054,7 @@ public class DefaultShardManagerBuilder
      * @param  factory
      *         The new {@link com.neovisionaries.ws.client.WebSocketFactory WebSocketFactory} to use.
      *
-     * @return Returns the {@link net.dv8tion.jda.core.JDABuilder JDABuilder} instance. Useful for chaining.
+     * @return The DefaultShardManagerBuilder instance. Useful for chaining.
      */
     public DefaultShardManagerBuilder setWebsocketFactory(WebSocketFactory factory)
     {
@@ -827,15 +1082,42 @@ public class DefaultShardManagerBuilder
     public ShardManager build() throws LoginException, IllegalArgumentException
     {
         final DefaultShardManager manager = new DefaultShardManager(
-            this.shardsTotal, this.shards, this.sessionController,
-            this.listeners, this.listenerProviders, this.token, this.eventManager,
-            this.audioSendFactory, this.gameProvider, this.statusProvider,
-            this.httpClientBuilder, this.wsFactory, this.threadFactory,
-            this.maxReconnectDelay, this.corePoolSize, this.enableVoice, this.enableShutdownHook, this.enableBulkDeleteSplitting,
-            this.autoReconnect, this.idleProvider, this.retryOnTimeout, this.useShutdownNow, this.enableContext, this.contextProvider, this.enableCompression);
+                this.shardsTotal, this.shards, this.sessionController,
+                this.listeners, this.listenerProviders, this.token, this.eventManagerProvider,
+                this.audioSendFactory, this.gameProvider, this.statusProvider,
+                this.httpClientBuilder, this.httpClient, this.rateLimitPoolProvider, this.gatewayPoolProvider,
+                this.callbackPoolProvider, this.wsFactory, this.threadFactory,
+                this.maxReconnectDelay, this.corePoolSize, this.enableVoice, this.enableShutdownHook, this.enableBulkDeleteSplitting,
+                this.autoReconnect, this.idleProvider, this.retryOnTimeout, this.useShutdownNow, this.enableContext,
+                this.contextProvider, this.cacheFlags, this.enableCompression);
 
         manager.login();
 
         return manager;
+    }
+
+    //Avoid having multiple anonymous classes
+    private static class ThreadPoolProviderImpl<T extends ExecutorService> implements ThreadPoolProvider<T>
+    {
+        private final boolean autoShutdown;
+        private final T pool;
+
+        public ThreadPoolProviderImpl(T pool, boolean autoShutdown)
+        {
+            this.autoShutdown = autoShutdown;
+            this.pool = pool;
+        }
+
+        @Override
+        public T provide(int shardId)
+        {
+            return pool;
+        }
+
+        @Override
+        public boolean shouldShutdownAutomatically(int shardId)
+        {
+            return autoShutdown;
+        }
     }
 }

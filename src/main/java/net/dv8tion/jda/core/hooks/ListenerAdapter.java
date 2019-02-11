@@ -176,6 +176,7 @@ public abstract class ListenerAdapter implements EventListener
     public void onTextChannelUpdatePermissions(TextChannelUpdatePermissionsEvent event) {}
     public void onTextChannelUpdateNSFW(TextChannelUpdateNSFWEvent event) {}
     public void onTextChannelUpdateParent(TextChannelUpdateParentEvent event) {}
+    public void onTextChannelUpdateSlowmode(TextChannelUpdateSlowmodeEvent event) {}
     public void onTextChannelCreate(TextChannelCreateEvent event) {}
 
     //VoiceChannel Events
@@ -200,6 +201,7 @@ public abstract class ListenerAdapter implements EventListener
     public void onPrivateChannelDelete(PrivateChannelDeleteEvent event) {}
 
     //Guild Events
+    public void onGuildReady(GuildReadyEvent event) {}
     public void onGuildJoin(GuildJoinEvent event) {}
     public void onGuildLeave(GuildLeaveEvent event) {}
     public void onGuildAvailable(GuildAvailableEvent event) {}
@@ -463,6 +465,8 @@ public abstract class ListenerAdapter implements EventListener
             onTextChannelUpdateNSFW((TextChannelUpdateNSFWEvent) event);
         else if (event instanceof TextChannelUpdateParentEvent)
             onTextChannelUpdateParent((TextChannelUpdateParentEvent) event);
+        else if (event instanceof TextChannelUpdateSlowmodeEvent)
+            onTextChannelUpdateSlowmode((TextChannelUpdateSlowmodeEvent) event);
         else if (event instanceof TextChannelDeleteEvent)
         onTextChannelDelete((TextChannelDeleteEvent) event);
 
@@ -503,6 +507,8 @@ public abstract class ListenerAdapter implements EventListener
             onPrivateChannelDelete((PrivateChannelDeleteEvent) event);
 
         //Guild Events
+        else if (event instanceof GuildReadyEvent)
+            onGuildReady((GuildReadyEvent) event);
         else if (event instanceof GuildJoinEvent)
             onGuildJoin((GuildJoinEvent) event);
         else if (event instanceof GuildLeaveEvent)

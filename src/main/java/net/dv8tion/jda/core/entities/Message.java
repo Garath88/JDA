@@ -30,6 +30,7 @@ import okhttp3.Request;
 import okhttp3.Response;
 
 import javax.annotation.CheckReturnValue;
+import javax.annotation.Nullable;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -303,6 +304,17 @@ public interface Message extends ISnowflake, Formattable
     Member getMember();
 
     /**
+     * Returns the jump-to URL for the received message. Clicking this URL in the Discord client will cause the client to
+     * jump to the specified message.
+     * 
+     * @throws java.lang.UnsupportedOperationException
+     *         If this is not a Received Message from {@link net.dv8tion.jda.core.entities.MessageType#DEFAULT MessageType.DEFAULT}
+     * 
+     * @return A String representing the jump-to URL for the message
+     */
+    String getJumpUrl();
+
+    /**
      * The textual content of this message in the format that would be shown to the Discord client. All
      * {@link net.dv8tion.jda.core.entities.IMentionable IMentionable} entities will be resolved to the format
      * shown by the Discord client instead of the {@literal <id>} format.
@@ -543,6 +555,14 @@ public interface Message extends ISnowflake, Formattable
     boolean isTTS();
 
     /**
+     * A {@link net.dv8tion.jda.core.entities.MessageActivity MessageActivity} that contains its type and party id.
+     *
+     * @return The activity, or {@code null} if no activity was added to the message.
+     */
+    @Nullable
+    MessageActivity getActivity();
+
+    /**
      * Edits this Message's content to the provided String.
      * <br><b>Messages can only be edited by the account that sent them!</b>.
      *
@@ -709,8 +729,8 @@ public interface Message extends ISnowflake, Formattable
      * a {@link net.dv8tion.jda.core.entities.TextChannel TextChannel} and the current account has
      * {@link net.dv8tion.jda.core.Permission#MESSAGE_MANAGE Permission.MESSAGE_MANAGE} in the channel.
      *
-     * <p><u>To delete up 100 messages at once in a {@link net.dv8tion.jda.core.entities.TextChannel TextChannel}
-     * you should use {@link net.dv8tion.jda.core.entities.TextChannel#deleteMessages(java.util.Collection) TextChannel.deleteMessages(Collection)}</u>
+     * <p><u>To delete many messages at once in a {@link net.dv8tion.jda.core.entities.MessageChannel MessageChannel}
+     * you should use {@link net.dv8tion.jda.core.entities.MessageChannel#purgeMessages(List) MessageChannel.purgeMessages(Collection)} instead.</u>
      *
      * <p>The following {@link net.dv8tion.jda.core.requests.ErrorResponse ErrorResponses} are possible:
      * <ul>
@@ -743,6 +763,7 @@ public interface Message extends ISnowflake, Formattable
      * @return {@link net.dv8tion.jda.core.requests.restaction.AuditableRestAction AuditableRestAction}
      *
      * @see    net.dv8tion.jda.core.entities.TextChannel#deleteMessages(java.util.Collection) TextChannel.deleteMessages(Collection)
+     * @see    net.dv8tion.jda.core.entities.MessageChannel#purgeMessages(java.util.List) MessageChannel.purgeMessages(List)
      */
     @CheckReturnValue
     AuditableRestAction<Void> delete();
@@ -1233,9 +1254,9 @@ public interface Message extends ISnowflake, Formattable
 
         /**
          * The height of the Attachment if this Attachment is an image.
-         * <br>If this Attachment is not an image, this returns 0.
+         * <br>If this Attachment is not an image, this returns -1.
          *
-         * @return Never-negative int containing image Attachment height.
+         * @return int containing image Attachment height.
          */
         public int getHeight()
         {
@@ -1244,9 +1265,9 @@ public interface Message extends ISnowflake, Formattable
 
         /**
          * The width of the Attachment if this Attachment is an image.
-         * <br>If this Attachment is not an image, this returns 0.
+         * <br>If this Attachment is not an image, this returns -1.
          *
-         * @return Never-negative int containing image Attachment width.
+         * @return int containing image Attachment width.
          */
         public int getWidth()
         {
