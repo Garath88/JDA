@@ -6,7 +6,7 @@
 
     <groupId>net.dv8tion</groupId>
     <artifactId>JDA</artifactId>
-    <version>3.5.1_352-SNAPSHOT</version>
+    <version>3.8.2-SNAPSHOT</version>
 
     <build>
         <plugins>
@@ -74,6 +74,12 @@
             <artifactId>jna</artifactId>
             <version>4.5.2</version>
         </dependency>
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <version>16.0.1</version>
+        </dependency>
+
     </dependencies>
 
 </project>
